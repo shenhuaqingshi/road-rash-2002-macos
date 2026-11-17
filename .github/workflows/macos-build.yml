@@ -1,0 +1,38 @@
+name: Build macOS ARM64 App
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  macos-arm64:
+    name: Build macOS ARM64 Native App
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure and build Release app
+        run: |
+          cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release -DRR_BUNDLE_SDL=ON -DBUILD_TESTING=OFF
+          cmake --build build-release --target rr-game rr-import --parallel "$(sysctl -n hw.ncpu)"
+          APP="build-release/Road Rash Native.app"
+          cp AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+          cp build-release/build-info.json "$APP/Contents/Resources/build-info.json"
+          plutil -insert CFBundleIconFile -string "AppIcon" "$APP/Contents/Info.plist" 2>/dev/null || plutil -replace CFBundleIconFile -string "AppIcon" "$APP/Contents/Info.plist"
+          plutil -replace CFBundleDisplayName -string "暴力摩托 2002" "$APP/Contents/Info.plist"
+          xcrun strip -x "$APP/Contents/MacOS/Road Rash Native"
+          codesign --force --deep --sign - "$APP"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" build-release/RoadRash2002-macOS-arm64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RoadRash2002-macOS-arm64
+          path: build-release/RoadRash2002-macOS-arm64.zip

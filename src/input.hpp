@@ -1,0 +1,165 @@
+#pragma once
+#include "bike.hpp"
+#include "sdl_handles.hpp"
+#include <SDL3/SDL_events.h>
+#include <array>
+#include <map>
+#include <string>
+
+namespace rr {
+// Device-independent player intent; mapped onto the original control bits (bike.hpp).
+struct PlayerInput {
+    bool accelerate = false, brake = false, left = false, right = false;
+    bool punch = false, kick = false, backhand = false;
+    int steer_axis = 0; // gamepad stick, -32768..32767
+};
+// Analog-control path as traced (0x0044f880 joystick branch): the original picks
+// dead zones 0x3fff/0xbffd when the binding row's analog flag (0x00476c04) is set
+// and 0x6fff/0x8fff otherwise, then scales the deflection via 0x0044fa00.
+// Natively the stick is digital past one threshold: steer_dead_zone matches the
+// non-analog 0x6fff edge scaled to SDL units (0x6fff/0x7fff*32768 ~ 12000...16384;
+// 12000 keeps the existing game feel; see analysis/options2-notes.md).
+constexpr int steer_dead_zone = 12000;
+struct MenuDirections {
+    bool left = false, right = false, up = false, down = false;
+};
+// Native menu convenience: one dominant stick direction, with bounded repeat.
+// After interruption, require neutral before accepting a held stick again.
+class MenuStickInput {
+  public:
+    MenuDirections update(int x, int y, uint64_t now_ms);
+    void suspend();
+
+  private:
+    enum class Direction { none, left, right, up, down } direction_ = Direction::none;
+    uint64_t next_repeat_ = 0;
+    bool require_neutral_ = false;
+};
+// Dead-zone override in SDL axis units (plan 18 Task 7 stick setting);
+// the default keeps current feel for existing callers.
+uint32_t controls_from(const PlayerInput&, int dead_zone = steer_dead_zone);
+// Rebindable keyboard map (plan 18 Task 7): row i of the 0x00465fb8 table sets
+// control bit 1 << i (0x00476c00): accelerate, brake, left, lean down, nitro,
+// punch, kick, backhand, dismount (no reader; no native bit), right, lean up.
+// Rows 9/10 pair with 2/3 (Turn, Lean). A code holds the original keyboard code
+// in its high byte and the joystick code in its low byte (0x0040e760); the
+// keyboard path reads only the high byte. Without a custom table the native
+// default scancode sets below apply (current game feel).
+uint32_t bound_control_bits(const std::array<uint16_t, 11>& codes, bool custom, const bool* down);
+// Analog drive values the joystick path writes (0x0044fa00): DAT_004b7e78
+// throttle cut (+0x260 * deflection / 0x7fff; 0x0040ad10 throttles to
+// +0x260 minus it) and DAT_004b7e7c steer (deflection / 800; 0x0040ad30 steers
+// to it - 0x20 for left, to it for right). Both persist between polls; a bound
+// key or button resets them to full (0x0044fa50). Read only while the table
+// holds a joystick code (DAT_00476c98, 0x0044f7c0).
+struct JoystickAnalog {
+    int32_t throttle = 0, steer = 0;
+};
+// Custom-table rows also run 0x0044fa50 for each pressed key when `analog` is
+// given, in Windows VK order (the last write wins); `top_throttle` is the
+// player bike's +0x260 at poll time.
+uint32_t bound_control_bits(const std::array<uint16_t, 11>& codes, const bool* down, JoystickAnalog& analog,
+                            int32_t top_throttle);
+// JOYINFOEX fields the original reads (joyGetPosEx device 0): axes 0..0xffff
+// with 0x7fff centre, button bit n-1 for button n, POV in hundredths of a degree
+// (0xffff centred).
+struct JoystickState {
+    uint32_t x = 0x7fff, y = 0x7fff, r = 0x7fff;
+    uint32_t buttons = 0;
+    uint32_t pov = 0xffff;
+};
+// Native mapping of an SDL gamepad onto that state: left stick X/Y, the
+// triggers as the rudder R axis (left pedal pushes R up, right pedal down),
+// buttons 1-10 in XInput/winmm order (south, east, west, north, left and
+// right shoulder, back, start, left and right stick) then guide, misc,
+// paddles and touchpad, and the d-pad as the POV hat. Null pad: idle.
+JoystickState joystick_state(SDL_Gamepad*);
+// 0x0040f6d0 / 0x0040f7a0: the code a capture poll reads (0 none): stick X
+// left 0x28 / right 0x26, Y up 0x25 / down 0x27 past 15000/45000, then R
+// 0x2a / 0x29, the hat 0x21-0x24 at exactly 0/9000/18000/27000, then a single
+// pressed button 1..0x20 (two or more buttons read 0).
+uint8_t joystick_capture_code(const JoystickState&);
+// 0x0044f7c0: true when any row holds a joystick code (DAT_00476c98).
+bool joystick_bound(const std::array<uint16_t, 11>& codes);
+// 0x0044f880 for rows 0..10 in order: the control bits of the rows whose
+// joystick code is active, writing `analog` as the original does.
+uint32_t joystick_control_bits(const std::array<uint16_t, 11>& codes, const JoystickState&,
+                               JoystickAnalog& analog, int32_t top_throttle);
+// Original keyboard codes: 0x0040e5f0 picks the VK -> code table (US 0x00465fe8)
+// that 0x0040fb50/0x0044fa80 read. ASCII for letters, digits and punctuation,
+// 0x80-0x86 Clear/PgUp/PgDn/End/Home/Ins/Del (each with its keypad twin), 0x90-0x92
+// Shift/Ctrl/Alt, 0x93-0x96 Left/Up/Right/Down (keypad 4/8/6/2 too). Natively the
+// race keys are positions, so the US table maps codes to scancodes on any layout.
+// The scancodes that produce `code` (0 entries unused).
+std::array<int, 2> original_key_scancodes(uint8_t code);
+// The code a scancode produces, 0 when the original has none (the key is ignored).
+uint8_t original_key_code(int scancode);
+// Plan 33b Task 4: race keys are physical positions (scancodes), so AZERTY,
+// QWERTZ and Dvorak keep the same layout; the label is what the current
+// layout prints on that key. `lookup` is SDL_GetKeyFromScancode except in tests.
+using KeyFromScancode = SDL_Keycode (*)(SDL_Scancode, SDL_Keymod, bool);
+std::string key_label(int scancode, KeyFromScancode lookup = SDL_GetKeyFromScancode);
+// Primary native default key of action row 0..10 (-1: unbound).
+int default_key_scancode(int action);
+// Plan 33b Task 4: button names on the connected pad (Xbox A/B/X/Y,
+// PlayStation Cross/Circle/Square/Triangle, Nintendo by printed label),
+// positional names when unknown. Face buttons follow SDL_GetGamepadButtonLabel.
+struct PadLabels {
+    std::string south = "South", east = "East", west = "West", north = "North";
+    std::string start = "Start", back = "Back", left_trigger = "LT", right_trigger = "RT",
+                right_shoulder = "RB";
+};
+PadLabels pad_labels(SDL_GamepadType, SDL_GamepadButtonLabel south, SDL_GamepadButtonLabel east,
+                     SDL_GamepadButtonLabel west, SDL_GamepadButtonLabel north);
+PadLabels pad_labels(SDL_Gamepad*); // null: positional names
+// The four mapping rows of the Gamepad page, matching race_screen's mapping.
+std::array<std::string, 4> gamepad_rows(const PadLabels&, bool swap_punch_kick);
+// Hot-plug for every loop: opens a pad when one is added and none is open;
+// when the open pad goes away, falls back to another connected pad. Returns
+// true when the open pad was removed (races pause on that).
+bool track_gamepad(GamepadPtr&, const SDL_Event&);
+
+// Plan 33a Task 5 Step 5 (native addition): text entry with a pad alone, for
+// when the Steam on-screen keyboard does not appear. Up/down cycle the
+// character under the cursor (space, A-Z, a-z, 0-9, . - ' ! ? &), left/right
+// move it. `cursor` is -1 while the keyboard edits the end of the buffer; the
+// first pad move puts it on the empty slot after the text (the last slot when
+// the buffer is full). The slot at buffer.size() is empty until up/down.
+struct PadTextMove {
+    bool up = false, down = false, left = false, right = false;
+};
+void pad_text_edit(std::string& buffer, int& cursor, PadTextMove move, size_t max_len);
+// The buffer as shown while editing: the pad's character in brackets, or a
+// trailing underscore for the keyboard (and the pad's empty slot).
+std::string pad_text_caption(const std::string& buffer, int cursor);
+// One touch point on a width x height window (mirrored zones when left_handed).
+PlayerInput touch_input(float x, float y, float width, float height, bool left_handed = false);
+// Phone buttons use full-window normalized coordinates, including letterbox
+// margins. Rendering and hit testing share this layout (1000 x 450 units).
+enum class TouchAction { left, right, accelerate, brake, punch, kick, backhand, pause };
+struct TouchButton {
+    TouchAction action;
+    float x, y, w, h;
+    const char* label;
+};
+std::array<TouchButton, 8> phone_buttons(bool left_handed);
+bool touch_contains(const TouchButton&, float normalized_x, float normalized_y);
+PlayerInput phone_touch_input(float x, float y, bool left_handed);
+// Each finger keeps its own intent; releasing one cannot release another.
+class TouchInput {
+  public:
+    void handle(const SDL_Event&);
+    void clear() { fingers_.clear(); }
+    void set_left_handed(bool v) { left_handed_ = v; }
+    void set_phone_controls(bool v) {
+        phone_controls_ = v;
+        clear();
+    }
+    PlayerInput current() const;
+
+  private:
+    std::map<std::pair<SDL_TouchID, SDL_FingerID>, PlayerInput> fingers_;
+    bool left_handed_ = false;
+    bool phone_controls_ = false;
+};
+} // namespace rr

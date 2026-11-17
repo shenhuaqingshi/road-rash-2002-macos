@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#101010">
+<title>Road Rash</title>
+<link rel="icon" href="favicon.ico" sizes="16x16 32x32 48x48" type="image/x-icon">
+<meta name="description" content="Race and brawl through the 1994 motorcycle-combat classic in your browser — quick races across five courses, keyboard and gamepad support. Unofficial port, not affiliated with Electronic Arts.">
+<link rel="canonical" href="https://road-rash.archit.xyz/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Road Rash">
+<meta property="og:title" content="Road Rash — playable in your browser">
+<meta property="og:description" content="Race and brawl through the 1994 motorcycle-combat classic in your browser — quick races across five courses, keyboard and gamepad support. Unofficial port, not affiliated with Electronic Arts.">
+<meta property="og:url" content="https://road-rash.archit.xyz/">
+<meta property="og:image" content="https://road-rash.archit.xyz/og-image.png">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Road Rash logo in orange and yellow over a night highway — the 1994 classic, playable in your browser">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Road Rash — playable in your browser">
+<meta name="twitter:description" content="Race and brawl through the 1994 motorcycle-combat classic in your browser — quick races across five courses, keyboard and gamepad support. Unofficial port, not affiliated with Electronic Arts.">
+<meta name="twitter:image" content="https://road-rash.archit.xyz/og-image.png">
+<meta name="twitter:image:alt" content="Road Rash logo in orange and yellow over a night highway — the 1994 classic, playable in your browser">
+<link rel="stylesheet" href="style.css">
+<script src="telemetry.js" defer></script>
+<script src="rr-game.js" defer></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+<header class="toolbar">
+  <h1 class="brand"><span>Road</span> <span>Rash</span></h1>
+  <span id="state">Loading</span>
+  <nav aria-label="Game controls">
+    <details class="controls">
+      <summary>Controls</summary>
+      <div class="controls-panel">
+        <span class="kicker">Keyboard &amp; gamepad</span>
+        <h2>Controls</h2>
+        <dl>
+          <dt>↑ / W</dt><dd>Accelerate</dd>
+          <dt>↓ / S</dt><dd>Brake</dd>
+          <dt>← → / A D</dt><dd>Steer</dd>
+          <dt>Z X C</dt><dd>Fight</dd>
+          <dt>P</dt><dd>Pause</dd>
+          <dt>Enter</dt><dd>Select / resume / skip movie</dd>
+        </dl>
+        <p>Click the game to focus. Gamepads are supported. Returning to the tab pauses the race.</p>
+        <p>On phones and tablets, on-screen buttons appear while you play; Touch shows or hides them. Starting a game goes full screen and turns sideways where the browser allows it.</p>
+      </div>
+    </details>
+    <button id="touch-toggle" aria-pressed="false" hidden>Touch</button>
+    <button id="fullscreen" disabled>Full screen</button>
+    <button id="reload" class="accent" hidden>Exit to launcher</button>
+  </nav>
+</header>
+<main aria-label="Road Rash game">
+  <div class="viewport">
+    <canvas id="canvas" tabindex="0" aria-label="Road Rash game canvas" hidden></canvas>
+    <!-- On-screen controls send the game's default keys (src/input.cpp kDefaultKeys). -->
+    <div id="touch" class="touch-pad" aria-hidden="true" hidden>
+      <div class="touch-cluster touch-steer">
+        <button type="button" data-code="ArrowLeft" data-key="ArrowLeft" class="touch-big">◀</button>
+        <button type="button" data-code="ArrowRight" data-key="ArrowRight" class="touch-big">▶</button>
+      </div>
+      <div class="touch-cluster touch-fight">
+        <button type="button" data-code="KeyZ" data-key="z">Punch</button>
+        <button type="button" data-code="KeyX" data-key="x">Kick</button>
+        <button type="button" data-code="KeyC" data-key="c">Back&shy;hand</button>
+      </div>
+      <div class="touch-cluster touch-drive">
+        <button type="button" data-code="ArrowDown" data-key="ArrowDown" class="touch-big">Brake<small>▼</small></button>
+        <button type="button" data-code="ArrowUp" data-key="ArrowUp" class="touch-big touch-gas">Gas<small>▲</small></button>
+      </div>
+      <div class="touch-cluster touch-system">
+        <button type="button" data-code="Escape" data-key="Escape">Back</button>
+        <button type="button" data-code="KeyP" data-key="p">Pause</button>
+        <button type="button" data-code="Enter" data-key="Enter" class="touch-ok">OK</button>
+      </div>
+    </div>
+    <div id="rotate-hint" class="rotate-hint" role="status" hidden>
+      <span class="rotate-icon" aria-hidden="true"></span>
+      <p>Turn your device sideways to ride.</p>
+    </div>
+    <section id="setup" aria-label="Game launcher">
+      <h2 class="launcher-title"><span>Road</span> <span>Rash</span></h2>
+      <p id="setup-description">Connecting to the game server…</p>
+      <div class="actions import-actions" hidden>
+        <label class="button primary disabled" for="iso">Choose disc image</label>
+        <input id="iso" type="file" disabled accept=".iso">
+        <label class="button disabled" for="folder">Choose folder</label>
+        <input id="folder" type="file" disabled webkitdirectory multiple>
+      </div>
+      <div id="ready" hidden>
+        <div class="modes">
+          <button id="play" class="start-game" aria-describedby="start-description">
+            <span class="mode-kicker">Main game</span>
+            <span class="mode-title">Start Game</span>
+            <span id="start-description" class="start-description">Play original game</span>
+            <span class="mode-go" aria-hidden="true"><i></i><i></i><i></i></span>
+          </button>
+          <section class="quick-race" aria-labelledby="quick-race-title">
+            <span class="mode-kicker">Jump straight in</span>
+            <h3 id="quick-race-title">Quick Race</h3>
+            <span class="course-label" id="course-label">Course</span>
+            <input id="course" type="hidden" value="0">
+            <button id="course-button" class="rider-button course-button" type="button" aria-haspopup="dialog" aria-labelledby="course-label course-name">
+              <span class="rider-thumb" aria-hidden="true"><img id="course-thumb" alt=""></span>
+              <span class="rider-chip-text">
+                <span id="course-name" class="rider-chip-name">Napa Valley</span>
+                <span id="course-length" class="rider-chip-bike">Choose your course</span>
+              </span>
+              <span class="rider-chip-go" aria-hidden="true">Change</span>
+            </button>
+            <span class="course-label rider-label" id="rider-label">Rider</span>
+            <input id="character" type="hidden" value="1">
+            <button id="rider-button" class="rider-button" type="button" aria-haspopup="dialog" aria-labelledby="rider-label rider-name">
+              <span class="rider-thumb" aria-hidden="true"><img id="rider-thumb" alt=""></span>
+              <span class="rider-chip-text">
+                <span id="rider-name" class="rider-chip-name">Axle</span>
+                <span id="rider-bike" class="rider-chip-bike">Choose your rider</span>
+              </span>
+              <span class="rider-chip-go" aria-hidden="true">Change</span>
+            </button>
+            <button id="quick">Race<span aria-hidden="true">▸</span></button>
+          </section>
+        </div>
+        <section class="online" aria-labelledby="online-title">
+          <header class="online-head">
+            <div>
+              <span class="mode-kicker">Online · Mano a Mano</span>
+              <h3 id="online-title">Multiplayer</h3>
+            </div>
+            <span id="net-status" class="net-status" data-state="checking" role="status" aria-live="polite"><i aria-hidden="true"></i><span>Checking server…</span></span>
+          </header>
+          <div id="invite" class="invite" hidden>
+            <p><span class="kicker">You're invited</span> Room <strong id="invite-code"></strong></p>
+            <div class="invite-actions">
+              <button id="invite-join" class="primary">Join race</button>
+              <button id="invite-watch">Watch</button>
+            </div>
+          </div>
+          <div class="online-grid">
+            <div class="online-actions">
+              <button id="net-host" class="net-host">
+                <span class="net-host-title">Host a room</span>
+                <span class="net-host-note">Pick a level, then share the room code</span>
+              </button>
+              <form id="net-join" class="net-join" novalidate>
+                <label class="course-label" for="net-code">Join with a code</label>
+                <div class="code-row">
+                  <input id="net-code" type="text" inputmode="text" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="64" placeholder="ABC-DEF" aria-describedby="net-code-hint">
+                  <button id="net-join-go" type="submit" disabled>Join</button>
+                </div>
+                <label class="net-watch"><input id="net-watch" type="checkbox"> Watch as a spectator</label>
+                <span id="net-code-hint" class="net-hint">Six letters and digits, or paste an invite link.</span>
+              </form>
+            </div>
+            <div class="rooms" aria-labelledby="rooms-title">
+              <div class="rooms-head">
+                <span id="rooms-title" class="course-label">Public rooms</span>
+                <button id="net-browse" class="link-button" type="button">Browse in game</button>
+              </div>
+              <ul id="net-rooms" class="room-list"></ul>
+              <p id="net-empty" class="net-empty">No public rooms right now. Host one and share the code.</p>
+            </div>
+          </div>
+        </section>
+        <p id="cache-note" class="cache-note" hidden>Game files load automatically as you play and are cached on this device.</p>
+      </div>
+      <p id="status" role="status" aria-live="polite">Loading…</p>
+      <progress id="progress" max="341" value="0" hidden></progress>
+      <button id="cancel" hidden>Cancel import</button>
+      <button id="retry" hidden>Retry connection</button>
+    </section>
+    <div id="loading" role="status" aria-live="polite" hidden>
+      <div class="loading-panel">
+        <span class="kicker">Road Rash</span>
+        <h2 id="loading-title">Loading Road Rash</h2>
+        <p id="loading-message">Starting game…</p>
+        <div id="loading-progress" class="loading-track" role="progressbar" aria-label="Current loading step" aria-valuemin="0" aria-valuemax="100"><div id="loading-fill"></div></div>
+        <p id="loading-count" hidden></p>
+      </div>
+    </div>
+  </div>
+</main>
+<dialog id="course-dialog" class="rider-dialog course-dialog" aria-labelledby="course-dialog-title">
+  <form method="dialog" class="rider-screen">
+    <div class="rider-art course-art">
+      <img id="course-strip" class="course-strip" alt="">
+      <img id="course-postcard" class="course-postcard" alt="">
+      <div class="rider-namebox course-namebox">
+        <span class="kicker" id="course-dialog-title">Choose your course</span>
+        <h2 id="course-title" aria-live="polite">Napa Valley</h2>
+      </div>
+      <p id="course-blurb" class="course-blurb"></p>
+      <p class="course-meta"><span id="course-miles"></span><span>Level 1</span></p>
+      <div class="rider-roster course-roster" role="radiogroup" aria-label="Courses" id="course-roster">
+        <button type="button" role="radio" value="1">The City</button>
+        <button type="button" role="radio" value="2">Sierra Nevada</button>
+        <button type="button" role="radio" value="4">The Peninsula</button>
+        <button type="button" role="radio" value="0">Napa Valley</button>
+        <button type="button" role="radio" value="3">Pacific Highway</button>
+      </div>
+    </div>
+    <div class="rider-rail">
+      <figure class="rider-bike-view" id="course-horizon-view" hidden>
+        <span class="kicker">On the horizon</span>
+        <div class="course-horizon"><canvas id="course-horizon" width="1440" height="320" role="img" aria-label="The course skyline as seen in the race"></canvas></div>
+        <figcaption id="course-horizon-name"></figcaption>
+      </figure>
+      <div class="rider-actions">
+        <button id="course-confirm" value="ride" class="primary">Race <span id="course-confirm-name">Napa Valley</span></button>
+        <button value="cancel">Back</button>
+      </div>
+    </div>
+  </form>
+</dialog>
+<dialog id="rider-dialog" class="rider-dialog" aria-labelledby="rider-dialog-title">
+  <form method="dialog" class="rider-screen">
+    <div class="rider-art">
+      <img id="rider-portrait" class="rider-portrait" alt="">
+      <div class="rider-namebox">
+        <span class="kicker" id="rider-dialog-title">Choose your rider</span>
+        <h2 id="rider-title" aria-live="polite">Axle</h2>
+      </div>
+      <div class="rider-sheet">
+        <p id="rider-stats" class="rider-stats"></p>
+        <p id="rider-bio" class="rider-bio"></p>
+      </div>
+      <div class="rider-roster" role="radiogroup" aria-label="Riders" id="rider-roster">
+        <button type="button" role="radio" value="1">Axle</button>
+        <button type="button" role="radio" value="2">Bose Jefferson</button>
+        <button type="button" role="radio" value="3">Cydney Bass</button>
+        <button type="button" role="radio" value="4">Milwaukee Jon</button>
+        <button type="button" role="radio" value="5">Pearl McKurdy</button>
+        <button type="button" role="radio" value="6">Rhonda the Rash</button>
+        <button type="button" role="radio" value="7">Slim Jim</button>
+        <button type="button" role="radio" value="8">Teflon Mike</button>
+      </div>
+    </div>
+    <div class="rider-rail">
+      <figure class="rider-bike-view" id="rider-bike-view" hidden>
+        <span class="kicker">On the road</span>
+        <div class="rider-road"><canvas id="rider-sprite" width="56" height="128" role="img" aria-label="Rider and bike as seen in the race"></canvas></div>
+        <figcaption id="rider-bike-name"></figcaption>
+      </figure>
+      <div class="rider-actions">
+        <button id="rider-confirm" value="ride" class="primary">Ride as <span id="rider-confirm-name">Axle</span></button>
+        <button value="cancel">Back</button>
+      </div>
+    </div>
+  </form>
+</dialog>
+<footer>
+  <span>Unofficial port. Not affiliated with Electronic Arts.</span>
+  <span class="footer-links"><a href="https://github.com/arkits/road-rash" target="_blank" rel="noopener">GitHub</a><a href="LICENSES.txt">Licences</a></span>
+</footer>
+</body>
+</html>

@@ -1,0 +1,170 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 22,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build-${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "linux-gcc",
+      "inherits": "base",
+      "description": "Plan 33a: Linux GCC debug gate (pinned SDL when the system SDL is older than 3.4)",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++",
+        "RR_STRICT_WARNINGS": "ON"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "linux-clang",
+      "inherits": "linux-gcc",
+      "description": "Plan 33a: Linux Clang debug gate",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++"
+      }
+    },
+    {
+      "name": "linux-release",
+      "inherits": "linux-gcc",
+      "description": "Plan 33a: portable release (pinned static SDL that dlopens its backends, static libstdc++/libgcc and OpenSSL); build inside the Steam Runtime sniper SDK with tools/build_linux_package.sh",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "gcc-14",
+        "CMAKE_CXX_COMPILER": "g++-14",
+        "RR_STRICT_WARNINGS": "OFF",
+        "RR_STATIC_SDL": "ON",
+        "OPENSSL_USE_STATIC_LIBS": "ON",
+        "CMAKE_EXE_LINKER_FLAGS": "-static-libstdc++ -static-libgcc"
+      }
+    },
+    {
+      "name": "linux-asan",
+      "inherits": "linux-clang",
+      "description": "Plan 33a: ASan + UBSan tree (Clang)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -fsanitize-ignorelist=${sourceDir}/tools/sanitizer_ignorelist.txt",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -fsanitize-ignorelist=${sourceDir}/tools/sanitizer_ignorelist.txt",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
+      }
+    },
+    {
+      "name": "windows-base",
+      "hidden": true,
+      "inherits": "base",
+      "generator": "Ninja Multi-Config",
+      "toolchainFile": "$env{VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "RR_STATIC_SDL": "ON",
+        "OPENSSL_USE_STATIC_LIBS": "ON",
+        "CMAKE_C_COMPILER": "cl",
+        "CMAKE_CXX_COMPILER": "cl",
+        "VCPKG_APPLOCAL_DEPS": "OFF"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "description": "Run inside an MSVC developer environment (vcvarsall / ilammy/msvc-dev-cmd); independent of the Visual Studio version"
+    },
+    {
+      "name": "windows-msvc",
+      "inherits": "windows-base",
+      "description": "Plan 33b: MSVC x64 (release toolchain)",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static"
+      }
+    },
+    {
+      "name": "windows-msvc-arm64",
+      "inherits": "windows-base",
+      "description": "Plan 33b: MSVC native ARM64",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "arm64-windows-static"
+      }
+    },
+    {
+      "name": "windows-clang-cl",
+      "inherits": "windows-msvc",
+      "description": "Plan 33b: clang-cl x64 build check",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang-cl",
+        "CMAKE_CXX_COMPILER": "clang-cl"
+      }
+    },
+    {
+      "name": "windows-mingw",
+      "inherits": "base",
+      "description": "Plan 33b: MSYS2 clang64 build check (run inside the CLANG64 shell)",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "RR_STATIC_SDL": "ON"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-msvc",
+      "configurePreset": "windows-msvc",
+      "configuration": "Debug"
+    },
+    {
+      "name": "windows-msvc-arm64",
+      "configurePreset": "windows-msvc-arm64",
+      "configuration": "Debug"
+    },
+    {
+      "name": "windows-clang-cl",
+      "configurePreset": "windows-clang-cl",
+      "configuration": "Debug"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-msvc",
+      "configurePreset": "windows-msvc",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 4,
+        "timeout": 1800
+      }
+    },
+    {
+      "name": "windows-msvc-arm64",
+      "configurePreset": "windows-msvc-arm64",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 4,
+        "timeout": 1800
+      }
+    }
+  ]
+}

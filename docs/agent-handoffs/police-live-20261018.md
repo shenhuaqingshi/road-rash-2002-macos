@@ -1,0 +1,151 @@
+# Live police wiring (2026-10-18)
+
+Task: plan 32 slice D / plan 24 Task 2. Baseline commit: b15ed31 (HEAD 919c339
+sim state). Supersedes the "not recovered" claim in
+`rebaseline-police-20261018.md`: `0x00407860` and `0x00407f30` were already
+recovered (`analysis/oracle/rea-407860-copfind.md`, `rea-407f30-arrest.md`);
+what was missing was the cop-only AI branches and the live integration.
+
+## What changed
+
+- `src/race.hpp`, `src/race.cpp`, `src/race_schedule.cpp`, `src/race_pedestrians.cpp`:
+  `Rider::cop`; `Race::set_police`, `spawn_cop` (0x00406b80 + 0x00449910 slice
+  walk), `find_cop` (0x00407860: backward 0xa00 then forward 0x500 over rider
+  halves), `police_think` (0x00407f30: `police_arrest`, `police_spawn_due`),
+  `remove_cop` (0x004073a0 on parking, single player), `busted()`.
+  The cop is always the last rider, at most one; `riders_` is reserved so
+  references stay valid when it is appended.
+- Cop-only AI branches from the decompiles: 0x004082f0 (scan cap 0x5000, +0x1a4
+  decay with reset below 0x32, no speed reset, early return), 0x00408cd0 (no edge
+  test), 0x00409ca0 (window 500, downed-target speed caps), 0x0040a4f0 (always
+  snaps), 0x004092e0 (weapon-1 and relationship gate), 0x00409460 (no kick).
+- Excluded from the place table and the finish order (0x00407550 loops
+  0x004c7fb0, 0x00437800 skips the cop); cop animation uses bank 1 and the cop
+  palette (`ride_bank`, `Game::sync_actor_states`, `rider_nodes`).
+- `src/race_setup.cpp` enables police for non-solo races; `src/race_screen.cpp`
+  maps `busted()` to `RaceOutcome::busted` (career penalty and BUSTED video path
+  already existed).
+- `tests/police_test.cpp`: live section on Napa level 3 with a parked player.
+
+## Evidence
+
+- `police-test` (needs the disc): no cop before tick 4096; at 4096 the cop
+  spawns on slice 11 (player 12800 - 39 slices = 2816, same as the original
+  constructor capture `napa-police-spawn.tsv`); it chases in follow state 4
+  against the player, slows on approach, and `busted()` is set 440 ticks later.
+  That is native behavior, not a comparison with an original run.
+- Receipt for the full suite: see `docs/VERIFICATION.md` entry of the same date.
+
+## Follow-up (same day)
+
+- Siren: `SoundSystem::siren` ports 0x00435ae0 (slots 30/31, SIREN loops 0x259
+  updates then SIRENFST 0x79, each let finish its pass before the other starts;
+  volume = linear^2 * 0x4fff >> 16 scaled by the siren channel, cap 0x4000, own
+  mute gate). `Mixer::set_loop` stands for DirectSound `Play` on a playing buffer;
+  `play_loop` now turns a playing one-shot into a loop as 0x004141c0 does. The cop
+  posts event 19 from its think (0x00407bd0 head), a null record when it has no
+  target (0x00409ca0) or is removed (0x004073a0). `sound_test` covers audibility,
+  the alternation and silencing.
+- Arrest while on foot: 0x00407f30 runs for the crashed player too
+  (`police_think` called from the crash early-returns); a crashed rider's half is
+  the body, so the arrest position and the scan list use `crash_actor.motion`;
+  the 1,200-tick walk timer exemption (0x0040a9e0) applies to the cop itself
+  (`police_owner = r.cop`). `police_test`: a knocked-off player is arrested while
+  walking.
+- Regression note: the first commit of this slice left `src/race.cpp` broken at
+  HEAD 0e9e79d (zero-context hunk staging misplaced three blocks); 074e3bc fixed
+  it. Verified in an isolated worktree at the fixed content (build + oracle-sim,
+  field, schema2, police).
+
+## Follow-up 2 (same day, clean worktree at 2dcd4e6)
+
+- Arrest -> BUSTED screen link: `tests/race_screen_test.cpp` now drives the
+  police_test scenario through `Game`/`RaceScreen` (Napa level 3, parked
+  player, live cop arrest) and checks the career screen surfaces
+  `RaceOutcome::busted`, keeps it through the 0xb4-tick run-on and fade-out,
+  and ends. `frontend_test` already covers the last hop (`race_finished`
+  queues the BUSTED video) with a synthetic outcome; a visual playtest of
+  the video in `rr-game` is still not done.
+- Clean-worktree gate: build + `ctest -j4` 104/104 (the git-ignored
+  `analysis/oracle/sim-napa-solo.tsv` fixture copied in for `oracle-sim`;
+  without it that one test fails on the missing file only).
+
+## Open
+
+- Original-capture comparison (`napa-cops`, `city-cops`, `napa-cops-crashed`):
+  blocked on the shared oracle proxy. `tools/agent_workspace.py list` still
+  shows three claims, but two name proxy copies in other worktrees; the
+  main-tree claim is sim-l5-20261018, whose uncommitted proxy change
+  (`RR_ORACLE_LEVEL`, calling the original level setter 0x004453f0) is in
+  fact a prerequisite for a level-3 `napa-cops` run. No peer session is
+  live. Do not overwrite that change or install a new DLL until sim-l5
+  lands; a capture also needs a >4096-tick Wine run and new proxy field
+  dumps for the cop. Until then cop movement is checked by the native tests
+  and the recovered pseudocode only. Capture spec: `police-spawn-20261016d.md`.
+  Rechecked 2026-10-18 11:39 PDT: `origin/main` is 7d69329 with no sim-l5
+  commit on any branch; the main-tree proxy diff is unchanged (+23/-1,
+  mtime 07:30) and all three claim PIDs (53167, 77755, 60062) are dead with
+  no live peer session, so the claim is stale but the work is preserved
+  untouched. Next action for whoever lands sim-l5 (or the integrator):
+  commit that proxy/CMake/field-replay slice, reinstall the DLL, add cop
+  field dumps to the proxy, then run `napa-cops` (level 3+, past tick
+  4096), `napa-cops-crashed` and `city-cops` and wire the parity check.
+- 0x00434f40 height term in the siren for a cop on the other branch of a split.
+- DAT_004c5d7c == 4 and the network branches (+0x324 == 1, 0x004c4fb0).
+- Cop rider-half name (0x00446bf0 index 9 reads outside the table, left blank).
+- Playtest of arrest -> BUSTED video in `rr-game`.
+
+## Follow-up 3: first original cop capture (clean worktree, 2026-10-18)
+
+- Proxy: `RR_ORACLE_LEVEL=1..5` runs the original level setter 0x004453f0 at menu
+  entry (identical call to the uncommitted sim-l5 main-tree edit, so that edit
+  is the one to commit; the capture ran from the clean worktree commit e494e17,
+  not landed to avoid a conflicting duplicate). DLL installed in `prefix/.../RoadRashOracle`.
+- Capture: `RR_ORACLE_COURSE=4 RR_ORACLE_LEVEL=3 RR_ORACLE_SEED=1 RR_ORACLE_SIM=1
+  RR_ORACLE_FRAMES=4700 tools/oracle_capture.py capture napa-cops-l3-20261018`
+  (95 s, validated, 4700 contiguous frames, git-ignored local fixture
+  `analysis/oracle/napa-cops-l3-20261018.tsv` + receipt). AI drives the player
+  (no human input), so this is original-list evidence, not player-control parity.
+- Observed: the rider count rises 11 -> 12 exactly at tick 4096 (the
+  `(tick & 0xfff) == 0` periodic spawn, no level guard in 0x00407f30), matching
+  the native `police_test` spawn tick.
+- Still open: per-tick cop field dumps are not in the proxy (the cop is only an
+  extra rider in the generic rider dump), so cop movement/arrest parity is not
+  yet compared; `napa-cops-crashed` and `city-cops` not run.
+
+## Follow-up 4: cop parity with the original (2026-10-18)
+
+- Proxy: `rider.N.cop`, `police.slot`, `police.cycle` mark the cop slot
+  (DAT_004642dc); `RR_ORACLE_LEVEL` is in this commit. The main tree still has
+  sim-l5's uncommitted copy of the level hunk; keep one when merging.
+- Fix: `Race::schedule_pass` visits nodes inserted mid-pass.
+- Evidence and commands: `docs/VERIFICATION.md` entry "napa-cops-parked".
+- `city-cops-parked-20261018` captured: exact to tick 4501; the divergence is City
+  traffic positions (native cop avoids car 14), bends verified equal. See VERIFICATION.md.
+- `napa-cops-crashed-20261018` captured and matched on 769 ticks (see VERIFICATION.md);
+  fixes: rider crash animation input timing (`step_crash`), camera follows the crash
+  body and pulls back only on the 0x10 latch / arrest (`update_camera`,
+  `camera_position`). Proxy: `RR_ORACLE_KNOCK`, crash body/half dumps.
+- Open: follow target `want` from tick 4865 of the crashed capture (original 24, native
+  falls); City traffic parity; native on-foot arrest vs an original capture.
+
+## Follow-up 5: half latch, post-arrest replan, on-foot arrest (2026-10-18)
+
+- Baseline 5e48dae (clean worktree `.police-capture-20261018`). Changed:
+  `src/race_schedule.cpp` (`node_position`: a crashed half sorts by the crash
+  body), `src/race.cpp` (`ai_replan`: the cop drops the player once busted),
+  `tests/police_test.cpp` (RNG anchor at 4095, arrest-tick assertions, new
+  captures), `oracle/aweman_proxy.c` (`RR_ORACLE_ORDER`). Evidence and commands:
+  `docs/VERIFICATION.md` entry "half latch, post-arrest replan, on-foot arrest".
+- Resolved: the 4865 follow target (it was the half latch, not a stale read);
+  the on-foot arrest vs the original (`napa-cops-foot2/3`, arrest 4616, exact);
+  parked Napa through the race end (arrest 4552); the DAT_004c5d7c == 4 replan
+  branch.
+- Open: traffic parity. The original's RNG stream before the cop differs from
+  run to run, so City (from 4359), `napa-cops-crashed` (from 4831) and
+  `napa-cops-foot` (from 4462) diverge on traffic that native cannot reproduce
+  from seed 1. The next step is `RR_ORACLE_RANDCOUNT=1 RR_ORACLE_RANDLOG=1`
+  on two runs, to find the run-varying draw sites from tick 245. Also open:
+  the BUSTED video playtest, and the City arrest at parity.
+- Shared resources: the oracle install now holds proxy `6d5f1b746138…` (this
+  commit's proxy). No processes left running.

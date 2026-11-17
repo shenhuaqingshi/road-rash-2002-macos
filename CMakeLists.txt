@@ -1,0 +1,494 @@
+cmake_minimum_required(VERSION 3.22)
+option(RR_BUNDLE_SDL "Build a standalone macOS ARM64 app with pinned static SDL" OFF)
+# Plan 33 Task A7: the pinned SDL source build, statically linked, on any
+# desktop platform (Linux/Windows packages; implied by RR_BUNDLE_SDL).
+option(RR_STATIC_SDL "Link the pinned SDL3 source build statically" OFF)
+if(RR_BUNDLE_SDL)
+    set(RR_STATIC_SDL ON CACHE BOOL "" FORCE)
+endif()
+if(RR_BUNDLE_SDL AND NOT ANDROID)
+    set(CMAKE_OSX_ARCHITECTURES arm64 CACHE STRING "Standalone application architecture" FORCE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET 13.0 CACHE STRING "Minimum macOS version" FORCE)
+endif()
+project(RoadRashNative LANGUAGES C CXX)
+if(MSVC)
+    include(cmake/msvc.cmake) # plan 33b
+endif()
+if(WIN32)
+    include(cmake/windows.cmake) # plan 33b: manifest, icon, version resources
+endif()
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+find_package(Threads REQUIRED)
+add_custom_target(rr-build-provenance
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/tools/build_info.py"
+        --header "${CMAKE_BINARY_DIR}/generated/rr_build_info.hpp"
+        --manifest "${CMAKE_BINARY_DIR}/build-info.json"
+        --version-header "${CMAKE_BINARY_DIR}/generated/rr_build_version.h"
+        --config "$<CONFIG>" --compiler "${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}"
+    BYPRODUCTS "${CMAKE_BINARY_DIR}/generated/rr_build_info.hpp" "${CMAKE_BINARY_DIR}/generated/rr_build_version.h"
+    VERBATIM)
+option(RR_DEV_ASSETS "Allow developer-only packaged Android game assets" OFF)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# Plan 33 Task A3: identical floating point on every compiler. GCC contracts
+# a*b+c into FMA by default (-ffp-contract=fast), Clang within expressions
+# (on), MSVC not at all; first-party code is compiled with contraction off.
+if(MSVC)
+    add_compile_options(/fp:precise)
+else()
+    add_compile_options(-ffp-contract=off)
+endif()
+option(RR_TSAN "ThreadSanitizer build (separate tree only; never combine with ASan/UBSan)" OFF)
+if(RR_TSAN)
+    if(EMSCRIPTEN OR ANDROID)
+        message(FATAL_ERROR "RR_TSAN requires a separate native tree (no Emscripten/Android)")
+    endif()
+    add_compile_options(-fsanitize=thread -fno-omit-frame-pointer -g)
+    add_link_options(-fsanitize=thread)
+endif()
+# Plan 22 Task 2: libFuzzer targets for every parser. Separate Homebrew-clang
+# tree only (Apple clang ships no libFuzzer); see cmake/llvm.cmake.
+option(RR_FUZZ "libFuzzer parser targets (requires Homebrew LLVM clang; separate build tree only)" OFF)
+if(RR_FUZZ)
+    if(EMSCRIPTEN OR ANDROID)
+        message(FATAL_ERROR "RR_FUZZ requires a separate native tree (no Emscripten/Android)")
+    endif()
+    include(cmake/llvm.cmake)
+    # Coverage instrumentation for first-party code without linking the fuzzing
+    # engine itself (libFuzzer defines main(), which would clash with every
+    # test and game binary); fuzz executables add -fsanitize=fuzzer at link.
+    add_compile_options(-fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g)
+    add_link_options(-fsanitize=address,undefined -fno-sanitize-recover=undefined)
+endif()
+option(RR_WEB_BROWSER "Build the playable browser application" OFF)
+if(EMSCRIPTEN)
+    include(cmake/emscripten.cmake)
+elseif(RR_STATIC_SDL)
+    if(ANDROID)
+        message(FATAL_ERROR "Android links the SDL AAR (third_party/SDL3-devel-*-android.zip), not RR_STATIC_SDL")
+    endif()
+    if(RR_BUNDLE_SDL AND NOT APPLE)
+        message(FATAL_ERROR "RR_BUNDLE_SDL is the standalone macOS build option; use RR_STATIC_SDL elsewhere")
+    endif()
+    include(cmake/sdl3_static.cmake)
+else()
+    # Plan 33 F17: tests and the game assume SDL 3.4 behaviour (3.2's software
+    # renderer fails the input overlay check). Older system SDL (Debian trixie
+    # ships 3.2) falls back to the pinned source build.
+    find_package(SDL3 3.4 CONFIG)
+    if(NOT SDL3_FOUND)
+        message(STATUS "System SDL3 >= 3.4 not found; building the pinned SDL3 (cmake/sdl3_static.cmake)")
+        set(RR_STATIC_SDL ON CACHE BOOL "" FORCE)
+        include(cmake/sdl3_static.cmake)
+    endif()
+endif()
+include(cmake/jpeg_scalar.cmake)
+include(cmake/freetype.cmake)
+include(cmake/wine_wingdings.cmake)
+add_library(rr-resource STATIC src/resource.cpp src/course.cpp src/road.cpp src/assets.cpp src/framebuffer.cpp src/bike.cpp src/race.cpp src/input.cpp src/bob.cpp src/session.cpp src/iso9660.cpp src/sha256.cpp src/importer.cpp src/import_job.cpp src/wav.cpp src/mixer.cpp src/ima_adpcm.cpp src/avi.cpp src/cinepak.cpp src/video_player.cpp src/raster.cpp src/terrain.cpp src/scene.cpp src/polygon.cpp src/texture.cpp src/cel.cpp src/world_renderer.cpp src/render_threads.cpp src/road_panels.cpp src/road_materials.cpp src/exe_tables.cpp src/pe_strings.cpp src/career.cpp src/text.cpp src/settings.cpp src/rri.cpp src/frontend.cpp src/sound.cpp src/explode.cpp src/rider_sprites.cpp src/mmpx.cpp src/upscale_cache.cpp src/atomic_file.cpp src/display.cpp src/native_strings.cpp src/native_screens.cpp src/view_state.cpp src/texture_perspective.cpp src/framebuffer_rgb.cpp src/raster_rgb.cpp src/fog.cpp src/post_chain.cpp src/upscale_import.cpp src/race_actions.cpp src/race_overlay.cpp src/race_helpers.cpp src/game_types.cpp src/race_screen.cpp)
+target_link_libraries(rr-resource PUBLIC SDL3::SDL3 Threads::Threads PRIVATE rr-jpeg rr-freetype)
+target_include_directories(rr-resource BEFORE PRIVATE "${RR_JPEG_SOURCE}/src" "${RR_JPEG_BINARY}"
+    "${RR_FREETYPE_BINARY}/include" "${RR_FREETYPE_SOURCE}/include")
+if(WIN32)
+    target_link_libraries(rr-resource PUBLIC shell32 ole32) # SHGetKnownFolderPath (plan 33b)
+endif()
+if(EMSCRIPTEN AND RR_WEB_BROWSER)
+    target_compile_definitions(rr-resource PUBLIC RR_WEB_BROWSER=1)
+    add_executable(rr-game src/game_main.cpp src/road_draw.cpp src/import_ui.cpp src/platform_web.cpp src/platform_game.cpp)
+    target_link_libraries(rr-game PRIVATE rr-resource SDL3::SDL3)
+    target_link_options(rr-game PRIVATE
+        -sMODULARIZE=1 -sEXPORT_NAME=createRoadRash -sFORCE_FILESYSTEM=1
+        -sEXPORTED_RUNTIME_METHODS=ccall,FS,ENV,HEAPU8,stringToUTF8,lengthBytesUTF8
+        -sEXPORTED_FUNCTIONS=_main,_malloc,_free -lidbfs.js)
+endif()
+
+target_sources(rr-resource PRIVATE src/family.cpp src/terrain_panels.cpp src/building_panels.cpp src/terrain_ground.cpp src/course_scene.cpp src/hud.cpp src/animation.cpp src/actor_animation.cpp src/actor_descriptors.cpp src/actor_render.cpp src/actor_nodes.cpp src/crash.cpp src/police.cpp src/scenery.cpp src/traffic.cpp src/pedestrians.cpp src/race_pedestrians.cpp src/race_schedule.cpp src/race_music.cpp src/race_setup.cpp src/track_ring.cpp src/race_state.cpp src/net/rollback.cpp src/det_math.cpp src/utf8_path.cpp src/system_fonts.cpp "${RR_WINGDINGS_CPP}" src/platform_files.cpp src/platform_linux.cpp src/file_browser.cpp)
+set_target_properties(rr-resource PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(rr-resource PUBLIC src)
+target_include_directories(rr-resource SYSTEM PRIVATE third_party)   # plan 30 Task 3: vendor headers out of warnings
+if(RR_FUZZ)
+    # Plan 22 Task 2 Step 1: one executable per fuzz/fuzz_*.cpp (fuzz/seeds.cpp
+    # is the seed writer, not a target), each linked against rr-resource.
+    file(GLOB RR_FUZZ_SOURCES fuzz/fuzz_*.cpp)
+    foreach(f ${RR_FUZZ_SOURCES})
+        get_filename_component(name "${f}" NAME_WE)
+        add_executable(${name} ${f})
+        target_link_libraries(${name} PRIVATE rr-resource)
+        target_link_options(${name} PRIVATE -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined)
+    endforeach()
+    add_executable(fuzz-seeds fuzz/seeds.cpp)
+    target_link_libraries(fuzz-seeds PRIVATE rr-resource)
+endif()
+include(cmake/net.cmake) # plan 34
+if(ANDROID)
+    set(RR_GAME_SOURCES src/game_main.cpp src/road_draw.cpp src/import_ui.cpp src/platform_game.cpp) # race_* and game_types are in rr-resource (plan 33b: lld-link rejects the duplicates)
+    # The Android build ships the playable game.
+    add_library(main SHARED ${RR_GAME_SOURCES})
+    set(RR_VIEWER main)
+else()
+    # Node configurations build tests only; RR_WEB_BROWSER adds the playable
+    # rr-game target above, with browser-specific imports and Asyncify.
+    set(RR_GAME_SOURCES src/game_main.cpp src/road_draw.cpp src/import_ui.cpp src/platform_game.cpp)
+    if(NOT EMSCRIPTEN)
+    add_executable(rr-import src/import_main.cpp)
+    target_link_libraries(rr-import PRIVATE rr-resource)
+    if(RR_BUNDLE_SDL)
+        set(RR_GAME_BUNDLE MACOSX_BUNDLE)
+    endif()
+    add_executable(rr-game ${RR_GAME_BUNDLE} ${RR_GAME_SOURCES})
+    target_link_libraries(rr-game PRIVATE rr-resource SDL3::SDL3)
+    if(APPLE)
+        target_link_options(rr-game PRIVATE -Wl,-dead_strip)
+    endif()
+    if(WIN32)
+        # Plan 33b Task 3: GUI subsystem (no console window; `--console`
+        # attaches to a parent console), icon and version resources.
+        set_target_properties(rr-game PROPERTIES WIN32_EXECUTABLE ON)
+        target_sources(rr-game PRIVATE "${CMAKE_BINARY_DIR}/windows/rr-game.rc")
+    endif()
+    if(RR_BUNDLE_SDL)
+        set_target_properties(rr-game PROPERTIES
+            OUTPUT_NAME "Road Rash Native"
+            MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/macos/Info.plist.in")
+        add_custom_command(TARGET rr-game POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:rr-game>/Contents/Resources"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_SOURCE_DIR}/third_party/SDL-LICENSE.txt"
+                "${CMAKE_SOURCE_DIR}/third_party/LICENSE"
+                "${CMAKE_SOURCE_DIR}/third_party/JPEG-LICENSE.md"
+                "${CMAKE_SOURCE_DIR}/third_party/JPEG-README.ijg"
+                "${CMAKE_SOURCE_DIR}/third_party/FreeType-FTL.txt"
+                "${CMAKE_SOURCE_DIR}/third_party/Wine-Wingdings-LGPL.txt"
+                "${CMAKE_SOURCE_DIR}/macos/README.txt"
+                "$<TARGET_BUNDLE_DIR:rr-game>/Contents/Resources"
+            COMMAND /usr/bin/codesign --force --sign - "$<TARGET_BUNDLE_DIR:rr-game>"
+            VERBATIM)
+    endif()
+    add_executable(rr-viewer src/viewer.cpp src/road_draw.cpp)
+    set(RR_VIEWER rr-viewer)
+    add_executable(rr-inspect src/inspect.cpp)
+    target_link_libraries(rr-inspect PRIVATE rr-resource)
+    add_executable(rr-course src/course_inspect.cpp)
+    target_link_libraries(rr-course PRIVATE rr-resource)
+    endif()
+    include(CTest)
+    add_compile_definitions(RR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    if(BUILD_TESTING)
+        if(NOT EMSCRIPTEN)
+        # Plan 33b: also proves a GUI-subsystem rr-game.exe reaches CTest's stdout.
+        add_test(NAME game-version COMMAND rr-game --version)
+        set_tests_properties(game-version PROPERTIES PASS_REGULAR_EXPRESSION "\"commit\": \"[0-9a-f]+\"")
+        # Plan 33b Task 5: the package verifier's form, --console first.
+        add_test(NAME game-version-console COMMAND rr-game --console --version)
+        set_tests_properties(game-version-console PROPERTIES PASS_REGULAR_EXPRESSION "\"commit\": \"[0-9a-f]+\"" TIMEOUT 60)
+        add_test(NAME first-run-smoke COMMAND rr-game --first-run-smoke)
+        set_tests_properties(first-run-smoke PROPERTIES ENVIRONMENT "RR_PREF_OVERRIDE=${CMAKE_BINARY_DIR}/first-run-test-pref")
+        # Plan 33b Task 2 Step 2: the same first run under a non-ASCII profile path.
+        add_test(NAME first-run-smoke-unicode COMMAND rr-game --first-run-smoke)
+        set_tests_properties(first-run-smoke-unicode PROPERTIES
+            ENVIRONMENT "RR_PREF_OVERRIDE=${CMAKE_BINARY_DIR}/first-run-Tëst ディレクトリ")
+        add_test(NAME game-race-wiring COMMAND rr-game --assets ${CMAKE_SOURCE_DIR}/../cdrom/ROADRASH --race --print-wiring)
+        set_tests_properties(game-race-wiring PROPERTIES PASS_REGULAR_EXPRESSION "terrain=1 .*ring=1 .*ride_library=1 .*nitro=1 .*finish=1 .*personalities=1" SKIP_RETURN_CODE 77)
+        endif()
+        add_executable(oracle-patch-test oracle/patch_test.c)
+        if(EMSCRIPTEN)
+            rr_web_hostfs(oracle-patch-test)
+        endif()
+        add_test(NAME oracle-patch COMMAND oracle-patch-test)
+        add_executable(oracle-actor-record-test oracle/actor_record_buffer_test.c)
+        add_test(NAME oracle-actor-record COMMAND oracle-actor-record-test)
+        set_tests_properties(oracle-patch PROPERTIES SKIP_RETURN_CODE 77)
+        add_executable(oracle-sim-test tests/oracle_sim_test.cpp)
+        target_link_libraries(oracle-sim-test PRIVATE rr-resource SDL3::SDL3)
+        if(EMSCRIPTEN)
+            rr_web_hostfs(oracle-sim-test)
+        endif()        # Diagnostic gate accepts only a pinned trace hash + exact divergence.
+        # Strict fidelity is a separate verify-sim target; never invert all failures.
+        add_test(NAME oracle-sim COMMAND ${Python3_EXECUTABLE}
+            "${CMAKE_SOURCE_DIR}/tools/verify_sim.py" --mode diagnostic
+            --binary "$<TARGET_FILE:oracle-sim-test>"
+            --report "${CMAKE_BINARY_DIR}/oracle-diagnostic.json")
+        # verify_sim exits 77 when the git-ignored fixture is absent (CI hosts).
+        set_tests_properties(oracle-sim PROPERTIES SKIP_RETURN_CODE 77)
+        # Live-field capture (plan 10 Tasks 6/7): full2400 tick replay; skipped without the git-ignored capture.
+        add_test(NAME oracle-sim-field COMMAND ${Python3_EXECUTABLE}
+            "${CMAKE_SOURCE_DIR}/tools/verify_sim.py" --mode diagnostic
+            --binary "$<TARGET_FILE:oracle-sim-test>"
+            --fixture "${CMAKE_SOURCE_DIR}/analysis/oracle/napa-field-l1-20261017.tsv"
+            --report "${CMAKE_BINARY_DIR}/oracle-field-diagnostic.json")
+        set_tests_properties(oracle-sim-field PROPERTIES SKIP_RETURN_CODE 77)
+        # Corrected car metadata plus every AI animation/relationship word.
+        add_test(NAME oracle-sim-field-schema2 COMMAND ${Python3_EXECUTABLE}
+            "${CMAKE_SOURCE_DIR}/tools/verify_sim.py" --mode diagnostic
+            --binary "$<TARGET_FILE:oracle-sim-test>"
+            --fixture "${CMAKE_SOURCE_DIR}/analysis/oracle/napa-field-l1-schema2-20261018.tsv"
+            --report "${CMAKE_BINARY_DIR}/oracle-field-schema2-diagnostic.json")
+        set_tests_properties(oracle-sim-field-schema2 PROPERTIES SKIP_RETURN_CODE 77)
+        # Level-5 live field (plan 10 Task 6 scenario `napa-field-l5`): the same
+        # 2400-tick free run with RR_ORACLE_LEVEL=5 selected through the
+        # original level setter, so level brain/bike/grid tables are exercised.
+        add_test(NAME oracle-sim-field-l5 COMMAND ${Python3_EXECUTABLE}
+            "${CMAKE_SOURCE_DIR}/tools/verify_sim.py" --mode diagnostic
+            --binary "$<TARGET_FILE:oracle-sim-test>"
+            --fixture "${CMAKE_SOURCE_DIR}/analysis/oracle/napa-field-l5-20261018.tsv"
+            --report "${CMAKE_BINARY_DIR}/oracle-field-l5-diagnostic.json")
+        set_tests_properties(oracle-sim-field-l5 PROPERTIES SKIP_RETURN_CODE 77)
+        # Level-5 live field re-capture with the w2c/we8 proxy (per-tick car
+        # +0x2c/+0xe8 branch diagnostics) is verified manually, not as a CTest:
+        # now 2400/2400 identical with 13 golden-only diagnostic keys, and a
+        # golden-only suffix can neither pass nor pin (same as L5e, which has
+        # 43). See docs/agent-handoffs/l5d-crash-car-20261026.md.
+        add_test(NAME agent-tooling COMMAND ${Python3_EXECUTABLE}
+            "${CMAKE_SOURCE_DIR}/tests/agent_tooling_test.py")
+        # Plan 33: portability lint (no __int128, total-order sorts, no platform libm, guarded POSIX headers).
+        add_test(NAME portability-lint COMMAND ${Python3_EXECUTABLE}
+            "${CMAKE_SOURCE_DIR}/tools/portability_check.py")
+        add_custom_target(verify-sim
+            COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/tools/verify_sim.py"
+                --mode acceptance --binary "$<TARGET_FILE:oracle-sim-test>"
+                --report "${CMAKE_BINARY_DIR}/oracle-acceptance.json"
+            DEPENDS oracle-sim-test VERBATIM)
+        add_executable(ring-probe tests/ring_probe.cpp)
+        target_link_libraries(ring-probe PRIVATE rr-resource)
+        add_executable(oracle-road-test tests/oracle_road_test.cpp)
+        target_link_libraries(oracle-road-test PRIVATE rr-resource)
+        if(EMSCRIPTEN)
+            rr_web_hostfs(oracle-road-test)
+        endif()
+        add_test(NAME oracle-road COMMAND oracle-road-test)
+        set_tests_properties(oracle-road PROPERTIES SKIP_RETURN_CODE 77)
+        add_executable(oracle-scene-test tests/oracle_scene_test.cpp)
+        target_link_libraries(oracle-scene-test PRIVATE rr-resource)
+        if(EMSCRIPTEN)
+            rr_web_hostfs(oracle-scene-test)
+        endif()
+        add_test(NAME oracle-scene COMMAND oracle-scene-test)
+        set_tests_properties(oracle-scene PROPERTIES SKIP_RETURN_CODE 77)
+        # Native terrain construction vs the original CANYN tunnel capture (skips without it).
+        add_test(NAME oracle-terrain COMMAND oracle-scene-test --native-terrain ${CMAKE_SOURCE_DIR}/analysis/oracle/pch-tunnel-20261016.tsv)
+        set_tests_properties(oracle-terrain PROPERTIES SKIP_RETURN_CODE 77)
+        # MEDLY side streets and building ends (0x0040ba10, 0x0040c450, 0x0040cbb0).
+        add_test(NAME oracle-terrain-medly COMMAND oracle-scene-test --native-terrain --nodes-only ${CMAKE_SOURCE_DIR}/analysis/oracle/medly-jump.tsv)
+        set_tests_properties(oracle-terrain-medly PROPERTIES SKIP_RETURN_CODE 77)
+        add_executable(oracle-raster-test tests/oracle_raster_test.cpp)
+        target_link_libraries(oracle-raster-test PRIVATE rr-resource)
+        if(EMSCRIPTEN)
+            rr_web_hostfs(oracle-raster-test)
+        endif()
+        add_test(NAME oracle-raster COMMAND oracle-raster-test)
+        set_tests_properties(oracle-raster PROPERTIES SKIP_RETURN_CODE 77)
+        add_executable(hires_render-test tests/hires_render_test.cpp)
+        target_link_libraries(hires_render-test PRIVATE rr-resource SDL3::SDL3)
+        if(EMSCRIPTEN)
+            rr_web_hostfs(hires_render-test)
+        endif()
+        add_test(NAME hires-render COMMAND hires_render-test)
+        set_tests_properties(hires-render PROPERTIES SKIP_RETURN_CODE 77)
+        add_executable(raster_rgb-test tests/raster_rgb_test.cpp)
+        target_link_libraries(raster_rgb-test PRIVATE rr-resource SDL3::SDL3)
+        if(EMSCRIPTEN)
+            rr_web_hostfs(raster_rgb-test)
+        endif()
+        add_test(NAME raster-rgb COMMAND raster_rgb-test)
+        set_tests_properties(raster-rgb PROPERTIES SKIP_RETURN_CODE 77)
+        add_executable(race_actions-test tests/race_actions_test.cpp)
+        target_link_libraries(race_actions-test PRIVATE rr-resource SDL3::SDL3)
+        add_test(NAME race-actions COMMAND race_actions-test)
+        add_executable(race_cache-test tests/race_cache_test.cpp src/road_draw.cpp)
+        target_link_libraries(race_cache-test PRIVATE rr-resource SDL3::SDL3)
+        target_compile_definitions(race_cache-test PRIVATE RR_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+        if(EMSCRIPTEN)
+            rr_web_hostfs(race_cache-test)
+        endif()
+        add_test(NAME race-cache COMMAND race_cache-test)
+        set_tests_properties(race-cache PROPERTIES SKIP_RETURN_CODE 77 LABELS "disc;slow")
+        add_executable(race_screen-test tests/race_screen_test.cpp src/road_draw.cpp)
+        target_link_libraries(race_screen-test PRIVATE rr-resource SDL3::SDL3)
+        add_test(NAME race-screen COMMAND race_screen-test)
+        set_tests_properties(race-screen PROPERTIES SKIP_RETURN_CODE 77 ENVIRONMENT "SDL_VIDEODRIVER=dummy" LABELS "disc")
+        add_executable(raster_rgb_alloc-test tests/raster_rgb_alloc_test.cpp)
+        target_link_libraries(raster_rgb_alloc-test PRIVATE rr-resource)
+        add_test(NAME raster-rgb-alloc COMMAND raster_rgb_alloc-test)
+        add_executable(raster_rgb_threads-test tests/raster_rgb_threads_test.cpp)
+        target_link_libraries(raster_rgb_threads-test PRIVATE rr-resource)
+        add_test(NAME raster-rgb-threads COMMAND raster_rgb_threads-test)
+        add_executable(render_threads_alloc-test tests/render_threads_alloc_test.cpp)
+        target_link_libraries(render_threads_alloc-test PRIVATE rr-resource)
+        add_test(NAME render-threads-alloc COMMAND render_threads_alloc-test)
+        add_executable(sdl_handles-test tests/sdl_handles_test.cpp)
+        target_link_libraries(sdl_handles-test PRIVATE rr-resource SDL3::SDL3)
+        add_test(NAME sdl-handles COMMAND sdl_handles-test)
+        add_executable(bike_field-test tests/bike_field_test.cpp)
+        target_link_libraries(bike_field-test PRIVATE rr-resource)
+        add_test(NAME bike-field COMMAND bike_field-test)
+        add_executable(byte_reader-test tests/byte_reader_test.cpp)
+        target_link_libraries(byte_reader-test PRIVATE rr-resource)
+        add_test(NAME byte-reader COMMAND byte_reader-test)
+        add_executable(upscale_import-test tests/upscale_import_test.cpp)
+        target_link_libraries(upscale_import-test PRIVATE rr-resource)
+        add_test(NAME upscale-import COMMAND upscale_import-test)
+        add_executable(post_chain-test tests/post_chain_test.cpp)
+        target_link_libraries(post_chain-test PRIVATE rr-resource)
+        add_test(NAME post-chain COMMAND post_chain-test)
+        add_executable(fog-test tests/fog_test.cpp)
+        target_link_libraries(fog-test PRIVATE rr-resource)
+        add_test(NAME fog COMMAND fog-test)
+        add_executable(texture_perspective-test tests/texture_perspective_test.cpp)
+        target_link_libraries(texture_perspective-test PRIVATE rr-resource)
+        add_test(NAME texture-perspective COMMAND texture_perspective-test)
+        add_executable(view_state-test tests/view_state_test.cpp)
+        target_link_libraries(view_state-test PRIVATE rr-resource)
+        add_test(NAME view-state COMMAND view_state-test)
+        add_executable(widescreen-test tests/widescreen_test.cpp)
+        target_link_libraries(widescreen-test PRIVATE rr-resource SDL3::SDL3)
+        if(EMSCRIPTEN)
+            rr_web_hostfs(widescreen-test)
+        endif()
+        add_test(NAME widescreen COMMAND widescreen-test)
+        set_tests_properties(widescreen PROPERTIES SKIP_RETURN_CODE 77)
+        add_executable(resource-test tests/resource_test.cpp)
+        target_link_libraries(resource-test PRIVATE rr-resource)
+        if(EMSCRIPTEN)
+            rr_web_hostfs(resource-test)
+        endif()
+        add_test(NAME resource-bounds COMMAND resource-test)
+        add_executable(road-test tests/road_test.cpp)
+        target_link_libraries(road-test PRIVATE rr-resource)
+        if(EMSCRIPTEN)
+            rr_web_hostfs(road-test)
+        endif()
+        add_test(NAME road-projection COMMAND road-test)
+        foreach(t framebuffer assets bike race race_schedule car_contact frozen_state input bob session golden sha256 iso9660 importer import_job wav mixer ima_adpcm avi cinepak raster view terrain scene polygon texture cel family course course_scene hud animation actor_animation actor_descriptors actor_render actor_nodes crash police scenery building_panels terrain_ground world_renderer road_panels road_materials exe_tables pe_strings career text frontend settings sound music traffic actor_traffic sim_fields mmpx upscale_cache race_setup pedestrian track_ring display native_screens render_threads rgba_cache atomic_file texture_edge check det_math fp_contract wide_math importer_case utf8_path system_fonts platform_files file_browser platform_linux)
+            add_executable(${t}-test tests/${t}_test.cpp)
+            target_link_libraries(${t}-test PRIVATE rr-resource SDL3::SDL3)
+            if(EMSCRIPTEN)
+                rr_web_hostfs(${t}-test)
+            endif()
+            add_test(NAME ${t} COMMAND ${t}-test)
+        endforeach()
+        add_executable(race_soak-test tests/race_soak_test.cpp)
+        target_link_libraries(race_soak-test PRIVATE rr-resource SDL3::SDL3)
+        if(EMSCRIPTEN)
+            rr_web_hostfs(race_soak-test)
+        endif()
+        add_test(NAME race-soak COMMAND race_soak-test)
+        set_tests_properties(race-soak race_setup PROPERTIES SKIP_RETURN_CODE 77)
+        set_tests_properties(polygon PROPERTIES SKIP_RETURN_CODE 77)
+        add_test(NAME pe-strings-corpus COMMAND pe_strings-test --corpus)
+        set_tests_properties(pe-strings-corpus PROPERTIES SKIP_RETURN_CODE 77)
+        add_test(NAME career-corpus COMMAND career-test --corpus)
+        set_tests_properties(career-corpus PROPERTIES SKIP_RETURN_CODE 77)
+        add_test(NAME career-save-corpus COMMAND career-test --save-corpus)
+        set_tests_properties(career-save-corpus PROPERTIES SKIP_RETURN_CODE 77)
+        set_tests_properties(text PROPERTIES SKIP_RETURN_CODE 77)
+        set_tests_properties(frontend PROPERTIES SKIP_RETURN_CODE 77)
+        set_tests_properties(native_screens PROPERTIES SKIP_RETURN_CODE 77)
+        set_tests_properties(sound PROPERTIES SKIP_RETURN_CODE 77)
+        set_tests_properties(music PROPERTIES SKIP_RETURN_CODE 77)
+        add_test(NAME wav-corpus COMMAND wav-test --corpus)
+        set_tests_properties(wav-corpus PROPERTIES SKIP_RETURN_CODE 77)
+        add_test(NAME mixer-device COMMAND mixer-test --device)
+        set_tests_properties(mixer-device PROPERTIES ENVIRONMENT "SDL_AUDIODRIVER=dummy")
+        if(EMSCRIPTEN)
+            # The binary exits 77 under Node (no audio clock); ctest must
+            # read that as a skip, like the other environment-gated tests.
+            set_tests_properties(mixer-device PROPERTIES SKIP_RETURN_CODE 77)
+        endif()
+        # Plan 30 Task 1: labels for targeted runs. `slow` = minutes-long;
+        # `sim` = simulation coverage; `disc` = reads the disc (77 without it);
+        # everything else gets `unit` from the loop below (Review Focus 1).
+        include(cmake/net_tests.cmake) # plan 34
+        if(CMAKE_CROSSCOMPILING_EMULATOR AND NOT EMSCRIPTEN)
+            # Plan 33b: the Python replay driver launches the cross-built
+            # binary itself, so give it the emulator (Wine for MinGW builds).
+            set_property(TEST oracle-sim oracle-sim-field oracle-sim-field-schema2 oracle-sim-field-l5
+                         APPEND PROPERTY ENVIRONMENT "RR_SIM_EMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}")
+        endif()
+        set(RR_SLOW_TESTS hires-render race-soak course_scene race_setup raster-rgb widescreen oracle-scene oracle-terrain oracle-terrain-medly)
+        set(RR_SIM_TESTS oracle-sim oracle-sim-field oracle-sim-field-schema2 oracle-sim-field-l5 race race_schedule car_contact frozen_state race-soak race_setup bike crash traffic actor_traffic pedestrian police sim_fields track_ring)
+        set(RR_DISC_TESTS oracle-road oracle-scene oracle-terrain oracle-terrain-medly oracle-raster hires-render raster-rgb widescreen polygon text frontend
+            native_screens sound music pe-strings-corpus career-corpus wav-corpus race-soak race_setup course_scene
+            game-race-wiring oracle-patch)
+        # Plan 33b Task 7: tests that need git-ignored local captures under
+        # analysis/oracle (exit 77 without them). CI may skip only `disc`,
+        # `fixture` and host-specific (`posix`) tests (tools/ctest_skip_check.py).
+        set(RR_FIXTURE_TESTS oracle-sim oracle-sim-field oracle-sim-field-schema2 oracle-sim-field-l5 career-save-corpus)
+        foreach(t ${RR_SLOW_TESTS})
+            set_property(TEST ${t} APPEND PROPERTY LABELS slow)
+        endforeach()
+        foreach(t ${RR_SIM_TESTS})
+            set_property(TEST ${t} APPEND PROPERTY LABELS sim)
+        endforeach()
+        foreach(t ${RR_DISC_TESTS})
+            if(TEST ${t}) # some are native-only (not in the browser build)
+                set_property(TEST ${t} APPEND PROPERTY LABELS disc)
+            endif()
+        endforeach()
+        foreach(t ${RR_FIXTURE_TESTS})
+            if(TEST ${t}) # some are native-only (not in the browser build)
+                set_property(TEST ${t} APPEND PROPERTY LABELS fixture)
+            endif()
+        endforeach()
+        get_property(RR_ALL_TESTS DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY TESTS)
+        if(CMAKE_HOST_WIN32)
+            # Plan 33b: the Python test drivers read UTF-8 sources and docs;
+            # Windows Python otherwise defaults to the ANSI code page.
+            set_property(TEST ${RR_ALL_TESTS} APPEND PROPERTY ENVIRONMENT "PYTHONUTF8=1")
+        endif()
+        foreach(t ${RR_ALL_TESTS})
+            get_property(RR_LBL TEST ${t} PROPERTY LABELS)
+            if(NOT RR_LBL)
+                set_property(TEST ${t} APPEND PROPERTY LABELS unit)
+            endif()
+        endforeach()
+    endif()
+endif()
+if(RR_VIEWER)
+    add_dependencies(${RR_VIEWER} rr-build-provenance)
+    target_include_directories(${RR_VIEWER} SYSTEM PRIVATE third_party)
+    target_link_libraries(${RR_VIEWER} PRIVATE rr-resource SDL3::SDL3)
+endif()
+if(TARGET rr-game)
+    add_dependencies(rr-game rr-build-provenance)
+    target_include_directories(rr-game PRIVATE "${CMAKE_BINARY_DIR}/generated")
+elseif(TARGET main)
+    target_include_directories(main PRIVATE "${CMAKE_BINARY_DIR}/generated")
+endif()
+if(ANDROID AND RR_DEV_ASSETS)
+    target_compile_definitions(main PRIVATE RR_DEV_ASSETS=1)
+endif()
+# Web-planning microbenchmark (plan 23, Task 1, Step 4). Opt-in so the
+# default build is unchanged; the web toolchain file enables it.
+option(RR_BENCH_DASH "Build the local desktop dashboard benchmark" OFF)
+if(RR_BENCH_DASH AND NOT ANDROID)
+    add_executable(dash_bench-test tests/dash_bench.cpp)
+    target_link_libraries(dash_bench-test PRIVATE rr-resource SDL3::SDL3)
+endif()
+option(RR_STRICT_WARNINGS "Zero first-party warnings at -Wall -Wextra -Wshadow -Wconversion" OFF)
+if(RR_STRICT_WARNINGS)
+    if(MSVC)
+        # Plan 33b: /W4 covers shadowing (C4456-C4459) and narrowing
+        # conversions (C4244, C4267); signed/unsigned (C4245, C4389) stays off
+        # like -Wno-sign-conversion.
+        add_compile_options(/W4 /wd4245 /wd4389)
+    else()
+        add_compile_options(-Wall -Wextra -Wshadow -Wconversion -Wno-sign-conversion)
+    endif()
+endif()
+option(RR_BENCH_RENDER "Build the rr-bench-render synthetic render benchmark" OFF)
+if(RR_BENCH_RENDER AND NOT ANDROID)
+    add_executable(rr-bench-render tests/bench_render.cpp)
+    target_link_libraries(rr-bench-render PRIVATE rr-resource)
+endif()
+option(RR_BENCH_WEB "Build the rr-bench-web render/codec microbenchmark" OFF)
+if(RR_BENCH_WEB AND NOT ANDROID)
+    add_executable(rr-bench-web tests/bench_web.cpp)
+    target_link_libraries(rr-bench-web PRIVATE rr-resource)
+endif()
+
+if(TARGET rr-game AND TARGET rr-net-transport)
+    target_link_libraries(rr-game PRIVATE rr-net-transport)
+endif()
+if(WIN32)
+    rr_windows_embed_manifests() # plan 33b: after every executable exists
+endif()

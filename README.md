@@ -4,9 +4,10 @@
 
 ## 本版定制与优化亮点
 
-1. **Retina 1440p 高清原生光栅化**：
-   - 修复 macOS Retina 物理像素识别（`SDL_GetWindowSizeInPixels`），默认开启 `HiRes`、`HiResBikers`、`render_scale = 3`（1440p 级内部光栅化）与 `Widescreen::match`（原生宽屏视野无黑边）。
+1. **Retina 高清原生光栅化**：
+   - 修复 macOS Retina 物理像素识别（`SDL_GetWindowSizeInPixels`），默认开启 `HiRes`、`HiResBikers`、`render_scale = 2`（约 960p 内部光栅化，M1 上稳定 60 fps）与 `Widescreen::match`（原生宽屏视野无黑边）。
    - 开启 3D 透视校正贴图（`perspective = true`）与高刷插帧（`interpolate = true`），采用 `SDL_SCALEMODE_PIXELART` 锐利像素采样，默认关闭高速模糊。
+   - **画面虚影修复**：早期版本默认 `render_scale = 3`（1440p），在 Apple M1 上软件光栅化每帧约 24 ms，60 Hz 垂直同步下只有约 41 fps，画面在 1 帧 / 2 帧推进之间来回跳，高速行驶时出现明显虚影（重影）。现默认改为 `2`，实测稳定 60 fps、帧步进均匀。已安装旧版的用户请在设置中将渲染倍率改为 2，或编辑 `~/Library/Application Support/RoadRashNative/RoadRash/settings.txt` 中的 `render_scale=2`；M3/M4 等更强芯片可自行尝试 3。
 2. **运行内存（RAM）与体积精简**：
    - 移除 `CourseCanvas` 与 `PostChain` 冗余缓冲区预分配，默认走零膨胀 8-bit 索引高清光栅化管线，赛后自动回收 RGBA Mipmap 缓存。
    - 开启 `-Wl,-dead_strip` 死代码消除与符号剥离，独立打包 `.app` 仅约 **10 MB**。

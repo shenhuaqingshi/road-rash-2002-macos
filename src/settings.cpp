@@ -62,7 +62,10 @@ Settings default_settings() {
     s.high_resolution = true;
     s.high_res_bikers = true;
     s.window_scale = 2;
-    s.render_scale = 3; // 1440p Retina/HiDPI crisp internal rasterization with low memory footprint
+    // 2x (~960p) internal rasterization. 3x (1440p) costs ~24 ms/frame of CPU raster on an
+    // Apple M1, which drops to ~41 fps under 60 Hz vsync: frames alternate between 1 and 2 sim
+    // ticks and fast-moving road/bikers judder into visible ghosting. 2x holds a steady 60 fps.
+    s.render_scale = 2;
     s.widescreen = Widescreen::match;
     s.filter = FilterMode::sharp;
     s.enhancements.interpolate = true;
